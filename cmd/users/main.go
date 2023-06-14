@@ -14,6 +14,8 @@ import (
 
 	"github.com/go-zoo/bone"
 	"github.com/jmoiron/sqlx"
+	chclient "github.com/mainflux/callhome/pkg/client"
+	"github.com/mainflux/mainflux"
 	"github.com/mainflux/mainflux/internal"
 	jaegerClient "github.com/mainflux/mainflux/internal/clients/jaeger"
 	pgClient "github.com/mainflux/mainflux/internal/clients/postgres"
@@ -71,6 +73,7 @@ type config struct {
 	RefreshDuration string `env:"MF_USERS_REFRESH_TOKEN_DURATION" envDefault:"24h"`
 	ResetURL        string `env:"MF_TOKEN_RESET_ENDPOINT"         envDefault:"/reset-request"`
 	JaegerURL       string `env:"MF_JAEGER_URL"                   envDefault:"http://jaeger:14268/api/traces"`
+	SendTelemetry   bool   `env:"MF_SEND_TELEMETRY"               envDefault:"true"`
 	PassRegex       *regexp.Regexp
 }
 
@@ -137,6 +140,11 @@ func main() {
 		log.Fatalf("failed to load %s gRPC server configuration : %s", svcName, err.Error())
 	}
 	gs := grpcserver.New(ctx, cancel, svcName, grpcServerConfig, registerAuthServiceServer, logger)
+
+	if cfg.SendTelemetry {
+		chc := chclient.New(svcName, mainflux.Version, logger, cancel)
+		go chc.CallHome(ctx)
+	}
 
 	g.Go(func() error {
 		return hsp.Start()

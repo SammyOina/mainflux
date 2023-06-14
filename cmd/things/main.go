@@ -14,6 +14,8 @@ import (
 	"github.com/go-redis/redis/v8"
 	"github.com/go-zoo/bone"
 	"github.com/jmoiron/sqlx"
+	chclient "github.com/mainflux/callhome/pkg/client"
+	"github.com/mainflux/mainflux"
 	"github.com/mainflux/mainflux/internal"
 	authClient "github.com/mainflux/mainflux/internal/clients/grpc/auth"
 	jaegerClient "github.com/mainflux/mainflux/internal/clients/jaeger"
@@ -70,6 +72,7 @@ type config struct {
 	StandaloneToken  string `env:"MF_THINGS_STANDALONE_TOKEN"    envDefault:""`
 	JaegerURL        string `env:"MF_JAEGER_URL"                 envDefault:"http://jaeger:14268/api/traces"`
 	CacheKeyDuration string `env:"MF_THINGS_CACHE_KEY_DURATION"  envDefault:"10m"`
+	SendTelemetry    bool   `env:"MF_SEND_TELEMETRY"             envDefault:"true"`
 }
 
 func main() {
@@ -154,6 +157,11 @@ func main() {
 		logger.Fatal(fmt.Sprintf("failed to load %s gRPC server configuration : %s", svcName, err))
 	}
 	gs := grpcserver.New(ctx, cancel, svcName, grpcServerConfig, registerThingsServiceServer, logger)
+
+	if cfg.SendTelemetry {
+		chc := chclient.New(svcName, mainflux.Version, logger, cancel)
+		go chc.CallHome(ctx)
+	}
 
 	// Start all servers
 	g.Go(func() error {
