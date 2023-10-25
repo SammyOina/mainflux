@@ -26,7 +26,7 @@ import (
 	"github.com/mainflux/mainflux/lora/api"
 	"github.com/mainflux/mainflux/lora/events"
 	"github.com/mainflux/mainflux/lora/mqtt"
-	mfredis "github.com/mainflux/mainflux/pkg/events/redis"
+	"github.com/mainflux/mainflux/pkg/events/store"
 	"github.com/mainflux/mainflux/pkg/messaging"
 	"github.com/mainflux/mainflux/pkg/messaging/brokers"
 	brokerstracing "github.com/mainflux/mainflux/pkg/messaging/brokers/tracing"
@@ -59,6 +59,7 @@ type config struct {
 	InstanceID     string        `env:"MF_LORA_ADAPTER_INSTANCE_ID"         envDefault:""`
 	ESURL          string        `env:"MF_LORA_ADAPTER_ES_URL"              envDefault:"redis://localhost:6379/0"`
 	RouteMapURL    string        `env:"MF_LORA_ADAPTER_ROUTE_MAP_URL"       envDefault:"redis://localhost:6379/0"`
+	TraceRatio     float64       `env:"MF_JAEGER_TRACE_RATIO"               envDefault:"1.0"`
 }
 
 func main() {
@@ -101,7 +102,7 @@ func main() {
 	}
 	defer rmConn.Close()
 
-	tp, err := jaeger.NewProvider(svcName, cfg.JaegerURL, cfg.InstanceID)
+	tp, err := jaeger.NewProvider(svcName, cfg.JaegerURL, cfg.InstanceID, cfg.TraceRatio)
 	if err != nil {
 		logger.Error(fmt.Sprintf("Failed to init Jaeger: %s", err))
 		exitCode = 1
@@ -195,7 +196,7 @@ func subscribeToLoRaBroker(svc lora.Service, mc mqttpaho.Client, timeout time.Du
 }
 
 func subscribeToThingsES(ctx context.Context, svc lora.Service, cfg config, logger mflog.Logger) error {
-	subscriber, err := mfredis.NewSubscriber(cfg.ESURL, thingsStream, cfg.ESConsumerName, logger)
+	subscriber, err := store.NewSubscriber(ctx, cfg.ESURL, thingsStream, cfg.ESConsumerName, logger)
 	if err != nil {
 		return err
 	}

@@ -26,6 +26,9 @@ import (
 	"github.com/mainflux/mainflux/pkg/messaging/brokers"
 	brokerstracing "github.com/mainflux/mainflux/pkg/messaging/brokers/tracing"
 	"github.com/mainflux/mainflux/pkg/uuid"
+	mp "github.com/mainflux/mproxy/pkg/coap"
+	"github.com/mainflux/mproxy/pkg/session"
+	"github.com/mainflux/mproxy/pkg/tls"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -35,14 +38,17 @@ const (
 	envPrefixHTTP  = "MF_COAP_ADAPTER_HTTP_"
 	defSvcHTTPPort = "5683"
 	defSvcCoAPPort = "5683"
+	targetHost     = ""
+	targetPort     = "5684"
 )
 
 type config struct {
-	LogLevel      string `env:"MF_COAP_ADAPTER_LOG_LEVEL"   envDefault:"info"`
-	BrokerURL     string `env:"MF_MESSAGE_BROKER_URL"       envDefault:"nats://localhost:4222"`
-	JaegerURL     string `env:"MF_JAEGER_URL"               envDefault:"http://jaeger:14268/api/traces"`
-	SendTelemetry bool   `env:"MF_SEND_TELEMETRY"           envDefault:"true"`
-	InstanceID    string `env:"MF_COAP_ADAPTER_INSTANCE_ID" envDefault:""`
+	LogLevel      string  `env:"MF_COAP_ADAPTER_LOG_LEVEL"   envDefault:"info"`
+	BrokerURL     string  `env:"MF_MESSAGE_BROKER_URL"       envDefault:"nats://localhost:4222"`
+	JaegerURL     string  `env:"MF_JAEGER_URL"               envDefault:"http://jaeger:14268/api/traces"`
+	SendTelemetry bool    `env:"MF_SEND_TELEMETRY"           envDefault:"true"`
+	InstanceID    string  `env:"MF_COAP_ADAPTER_INSTANCE_ID" envDefault:""`
+	TraceRatio    float64 `env:"MF_JAEGER_TRACE_RATIO"       envDefault:"1.0"`
 }
 
 func main() {
@@ -85,6 +91,11 @@ func main() {
 	}
 
 	auth, aHandler, err := authapi.SetupAuthz(svcName)
+	targetCoAPServerCfg := server.Config{
+		Host: targetHost,
+		Port: targetPort,
+	}
+
 	if err != nil {
 		logger.Error(err.Error())
 		exitCode = 1
@@ -94,7 +105,7 @@ func main() {
 
 	logger.Info("Successfully connected to things grpc server " + aHandler.Secure())
 
-	tp, err := jaegerclient.NewProvider(svcName, cfg.JaegerURL, cfg.InstanceID)
+	tp, err := jaegerclient.NewProvider(svcName, cfg.JaegerURL, cfg.InstanceID, cfg.TraceRatio)
 	if err != nil {
 		logger.Error(fmt.Sprintf("Failed to init Jaeger: %s", err))
 		exitCode = 1
@@ -114,7 +125,7 @@ func main() {
 		return
 	}
 	defer nps.Close()
-	nps = brokerstracing.NewPubSub(coapServerConfig, tracer, nps)
+	nps = brokerstracing.NewPubSub(targetCoAPServerCfg, tracer, nps)
 
 	svc := coap.New(auth, nps)
 
@@ -125,9 +136,9 @@ func main() {
 	counter, latency := internal.MakeMetrics(svcName, "api")
 	svc = api.MetricsMiddleware(svc, counter, latency)
 
-	hs := httpserver.New(ctx, cancel, svcName, httpServerConfig, api.MakeHandler(cfg.InstanceID), logger)
+	hs := httpserver.New(ctx, cancel, svcName, targetCoAPServerCfg, api.MakeHandler(cfg.InstanceID), logger)
 
-	cs := coapserver.New(ctx, cancel, svcName, coapServerConfig, api.MakeCoAPHandler(svc, logger), logger)
+	cs := coapserver.New(ctx, cancel, svcName, targetCoAPServerCfg, api.MakeCoAPHandler(svc, logger), logger)
 
 	if cfg.SendTelemetry {
 		chc := chclient.New(svcName, mainflux.Version, logger, cancel)
@@ -138,7 +149,10 @@ func main() {
 		return hs.Start()
 	})
 	g.Go(func() error {
-		return cs.Start()
+		g.Go(func() error {
+			return cs.Start()
+		})
+		return proxyCoAP(ctx, coapServerConfig, logger, coap.NewHandler(nps, logger, auth))
 	})
 	g.Go(func() error {
 		return server.StopSignalHandler(ctx, cancel, logger, svcName, hs, cs)
@@ -146,5 +160,39 @@ func main() {
 
 	if err := g.Wait(); err != nil {
 		logger.Error(fmt.Sprintf("CoAP adapter service terminated: %s", err))
+	}
+}
+
+func proxyCoAP(ctx context.Context, cfg server.Config, logger mflog.Logger, handler session.Handler) error {
+	address := fmt.Sprintf("%s:%s", cfg.Host, cfg.Port)
+	target := fmt.Sprintf("%s:%s", targetHost, targetPort)
+	mp, err := mp.NewProxy(address, target, logger, handler)
+	if err != nil {
+		return err
+	}
+
+	errCh := make(chan error)
+
+	switch {
+	case cfg.CertFile != "" || cfg.KeyFile != "":
+		tlscfg, err := tls.LoadTLSCfg(cfg.ServerCAFile, cfg.CertFile, cfg.KeyFile)
+		if err != nil {
+			return err
+		}
+		go func() {
+			errCh <- mp.ListenTLS(tlscfg)
+		}()
+	default:
+		go func() {
+			errCh <- mp.Listen()
+		}()
+	}
+
+	select {
+	case <-ctx.Done():
+		logger.Info(fmt.Sprintf("proxy MQTT shutdown at %s", target))
+		return nil
+	case err := <-errCh:
+		return err
 	}
 }

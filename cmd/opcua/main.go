@@ -25,7 +25,7 @@ import (
 	"github.com/mainflux/mainflux/opcua/db"
 	"github.com/mainflux/mainflux/opcua/events"
 	"github.com/mainflux/mainflux/opcua/gopcua"
-	mfredis "github.com/mainflux/mainflux/pkg/events/redis"
+	"github.com/mainflux/mainflux/pkg/events/store"
 	"github.com/mainflux/mainflux/pkg/messaging/brokers"
 	brokerstracing "github.com/mainflux/mainflux/pkg/messaging/brokers/tracing"
 	"github.com/mainflux/mainflux/pkg/uuid"
@@ -45,14 +45,15 @@ const (
 )
 
 type config struct {
-	LogLevel       string `env:"MF_OPCUA_ADAPTER_LOG_LEVEL"          envDefault:"info"`
-	ESConsumerName string `env:"MF_OPCUA_ADAPTER_EVENT_CONSUMER"     envDefault:"opcua-adapter"`
-	BrokerURL      string `env:"MF_MESSAGE_BROKER_URL"               envDefault:"nats://localhost:4222"`
-	JaegerURL      string `env:"MF_JAEGER_URL"                       envDefault:"http://jaeger:14268/api/traces"`
-	SendTelemetry  bool   `env:"MF_SEND_TELEMETRY"                   envDefault:"true"`
-	InstanceID     string `env:"MF_OPCUA_ADAPTER_INSTANCE_ID"        envDefault:""`
-	ESURL          string `env:"MF_OPCUA_ADAPTER_ES_URL"             envDefault:"redis://localhost:6379/0"`
-	RouteMapURL    string `env:"MF_OPCUA_ADAPTER_ROUTE_MAP_URL"      envDefault:"redis://localhost:6379/0"`
+	LogLevel       string  `env:"MF_OPCUA_ADAPTER_LOG_LEVEL"          envDefault:"info"`
+	ESConsumerName string  `env:"MF_OPCUA_ADAPTER_EVENT_CONSUMER"     envDefault:"opcua-adapter"`
+	BrokerURL      string  `env:"MF_MESSAGE_BROKER_URL"               envDefault:"nats://localhost:4222"`
+	JaegerURL      string  `env:"MF_JAEGER_URL"                       envDefault:"http://jaeger:14268/api/traces"`
+	SendTelemetry  bool    `env:"MF_SEND_TELEMETRY"                   envDefault:"true"`
+	InstanceID     string  `env:"MF_OPCUA_ADAPTER_INSTANCE_ID"        envDefault:""`
+	ESURL          string  `env:"MF_OPCUA_ADAPTER_ES_URL"             envDefault:"redis://localhost:6379/0"`
+	RouteMapURL    string  `env:"MF_OPCUA_ADAPTER_ROUTE_MAP_URL"      envDefault:"redis://localhost:6379/0"`
+	TraceRatio     float64 `env:"MF_JAEGER_TRACE_RATIO"               envDefault:"1.0"`
 }
 
 func main() {
@@ -104,7 +105,7 @@ func main() {
 	chanRM := newRouteMapRepositoy(rmConn, channelsRMPrefix, logger)
 	connRM := newRouteMapRepositoy(rmConn, connectionRMPrefix, logger)
 
-	tp, err := jaegerclient.NewProvider(svcName, cfg.JaegerURL, cfg.InstanceID)
+	tp, err := jaegerclient.NewProvider(svcName, cfg.JaegerURL, cfg.InstanceID, cfg.TraceRatio)
 	if err != nil {
 		logger.Error(fmt.Sprintf("Failed to init Jaeger: %s", err))
 		exitCode = 1
@@ -178,7 +179,7 @@ func subscribeToStoredSubs(ctx context.Context, sub opcua.Subscriber, cfg opcua.
 }
 
 func subscribeToThingsES(ctx context.Context, svc opcua.Service, cfg config, logger mflog.Logger) error {
-	subscriber, err := mfredis.NewSubscriber(cfg.ESURL, thingsStream, cfg.ESConsumerName, logger)
+	subscriber, err := store.NewSubscriber(ctx, cfg.ESURL, thingsStream, cfg.ESConsumerName, logger)
 	if err != nil {
 		return err
 	}

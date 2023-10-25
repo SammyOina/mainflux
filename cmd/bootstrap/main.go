@@ -28,7 +28,7 @@ import (
 	"github.com/mainflux/mainflux/internal/server"
 	httpserver "github.com/mainflux/mainflux/internal/server/http"
 	mflog "github.com/mainflux/mainflux/logger"
-	"github.com/mainflux/mainflux/pkg/events/redis"
+	"github.com/mainflux/mainflux/pkg/events/store"
 	mfsdk "github.com/mainflux/mainflux/pkg/sdk/go"
 	"github.com/mainflux/mainflux/pkg/uuid"
 	"go.opentelemetry.io/otel/trace"
@@ -46,14 +46,15 @@ const (
 )
 
 type config struct {
-	LogLevel       string `env:"MF_BOOTSTRAP_LOG_LEVEL"        envDefault:"info"`
-	EncKey         string `env:"MF_BOOTSTRAP_ENCRYPT_KEY"      envDefault:"12345678910111213141516171819202"`
-	ESConsumerName string `env:"MF_BOOTSTRAP_EVENT_CONSUMER"   envDefault:"bootstrap"`
-	ThingsURL      string `env:"MF_THINGS_URL"                 envDefault:"http://localhost:9000"`
-	JaegerURL      string `env:"MF_JAEGER_URL"                 envDefault:"http://jaeger:14268/api/traces"`
-	SendTelemetry  bool   `env:"MF_SEND_TELEMETRY"             envDefault:"true"`
-	InstanceID     string `env:"MF_BOOTSTRAP_INSTANCE_ID"      envDefault:""`
-	ESURL          string `env:"MF_BOOTSTRAP_ES_URL"           envDefault:"redis://localhost:6379/0"`
+	LogLevel       string  `env:"MF_BOOTSTRAP_LOG_LEVEL"        envDefault:"info"`
+	EncKey         string  `env:"MF_BOOTSTRAP_ENCRYPT_KEY"      envDefault:"12345678910111213141516171819202"`
+	ESConsumerName string  `env:"MF_BOOTSTRAP_EVENT_CONSUMER"   envDefault:"bootstrap"`
+	ThingsURL      string  `env:"MF_THINGS_URL"                 envDefault:"http://localhost:9000"`
+	JaegerURL      string  `env:"MF_JAEGER_URL"                 envDefault:"http://jaeger:14268/api/traces"`
+	SendTelemetry  bool    `env:"MF_SEND_TELEMETRY"             envDefault:"true"`
+	InstanceID     string  `env:"MF_BOOTSTRAP_INSTANCE_ID"      envDefault:""`
+	ESURL          string  `env:"MF_BOOTSTRAP_ES_URL"           envDefault:"redis://localhost:6379/0"`
+	TraceRatio     float64 `env:"MF_JAEGER_TRACE_RATIO"         envDefault:"1.0"`
 }
 
 func main() {
@@ -104,7 +105,7 @@ func main() {
 	defer authHandler.Close()
 	logger.Info("Successfully connected to auth grpc server " + authHandler.Secure())
 
-	tp, err := jaeger.NewProvider(svcName, cfg.JaegerURL, cfg.InstanceID)
+	tp, err := jaeger.NewProvider(svcName, cfg.JaegerURL, cfg.InstanceID, cfg.TraceRatio)
 	if err != nil {
 		logger.Error(fmt.Sprintf("failed to init Jaeger: %s", err))
 		exitCode = 1
@@ -184,7 +185,7 @@ func newService(ctx context.Context, auth mainflux.AuthServiceClient, db *sqlx.D
 }
 
 func subscribeToThingsES(ctx context.Context, svc bootstrap.Service, cfg config, logger mflog.Logger) error {
-	subscriber, err := redis.NewSubscriber(cfg.ESURL, thingsStream, cfg.ESConsumerName, logger)
+	subscriber, err := store.NewSubscriber(ctx, cfg.ESURL, thingsStream, cfg.ESConsumerName, logger)
 	if err != nil {
 		return err
 	}
